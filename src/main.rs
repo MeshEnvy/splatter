@@ -1,4 +1,4 @@
-//! Container entry: read `/work/request.json`, Skadi mirror under `PEAKY_SPLAT_CACHE`, write SPLAT-shaped outputs.
+//! Container entry: read `/work/request.json`, Skadi mirror under `SPLAT_CACHE`, write SPLAT-shaped outputs.
 
 use std::fs;
 use std::path::PathBuf;

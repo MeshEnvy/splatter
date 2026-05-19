@@ -28,7 +28,7 @@ pub fn run_coverage(work_dir: &Path, verbose: bool) -> Result<()> {
         }
     };
 
-    let mirror = std::env::var("PEAKY_SPLAT_CACHE").unwrap_or_else(|_| {
+    let mirror = std::env::var("SPLAT_CACHE").unwrap_or_else(|_| {
         work_dir
             .join(".tile_cache")
             .to_string_lossy()
@@ -36,7 +36,7 @@ pub fn run_coverage(work_dir: &Path, verbose: bool) -> Result<()> {
     });
     let mirror_root = Path::new(&mirror);
     log(&format!(
-        "work_dir={}  PEAKY_SPLAT_CACHE={}",
+        "work_dir={}  SPLAT_CACHE={}",
         work_dir.display(),
         mirror_root.display()
     ));

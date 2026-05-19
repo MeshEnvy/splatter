@@ -8,8 +8,8 @@
 #   SITE=/path/to/.cache/viewsheds/<digest>   # one propagation workspace dir
 #   MIRROR=/path/to/.cache/splat_tiles
 #   docker run --rm \
-#     -v "$SITE:/work" -v "$MIRROR:/peaky_tile_cache" \
-#     -e PEAKY_SPLAT_CACHE=/peaky_tile_cache \
+#     -v "$SITE:/work" -v "$MIRROR:/splat_cache" \
+#     -e SPLAT_CACHE=/splat_cache \
 #     splatter:latest run --work-dir /work
 # Add ``--verbose`` (or ``-v``) for stderr progress (tiles, DEM load, raster rows).
 

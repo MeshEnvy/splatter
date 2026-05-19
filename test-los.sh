@@ -31,7 +31,7 @@ RUN_ARGS=(run --work-dir /work)
 
 docker run --rm \
   -v "${SITE}:/work" \
-  -v "${MIRROR}:/peaky_tile_cache" \
-  -e "PEAKY_SPLAT_CACHE=/peaky_tile_cache" \
+  -v "${MIRROR}:/splat_cache" \
+  -e "SPLAT_CACHE=/splat_cache" \
   "${IMAGE}" \
   "${RUN_ARGS[@]}"
