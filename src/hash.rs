@@ -1,4 +1,4 @@
-//! Canonical input hash matching peaky_finders ``splat_input_hash`` (schema v5).
+//! Canonical input hash matching peaky_finders ``splat_input_hash`` (schema v6).
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -6,7 +6,23 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 /// Must match ``SPLAT_CACHE_SCHEMA_VERSION`` in ``splat_input_hash.py``.
-pub const SPLAT_CACHE_SCHEMA_VERSION: i64 = 5;
+pub const SPLAT_CACHE_SCHEMA_VERSION: i64 = 6;
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct LoRaModemParams {
+    pub spreading_factor: i64,
+    pub bandwidth_khz: f64,
+    #[serde(default = "default_modem_coding_rate")]
+    pub coding_rate: i64,
+    #[serde(default)]
+    pub implementation_margin_db: f64,
+    pub sensitivity_dbm: Option<f64>,
+}
+
+fn default_modem_coding_rate() -> i64 {
+    5
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -48,6 +64,7 @@ pub struct Request {
     pub max_dbm: f64,
     #[serde(default = "default_high_resolution")]
     pub high_resolution: bool,
+    pub modem: LoRaModemParams,
 }
 
 fn default_ground_dielectric() -> f64 {
@@ -134,11 +151,33 @@ mod tests {
     const FIXTURE: &str =
         include_str!("../tests/fixtures/splat_request_hash_fixture.json");
     const GOLDEN: &str =
-        "c65b683ee85ff7ca5876c16e1bfc9fd55929f585d3985c33cb9f7591cbe6c658";
+        "c08c8569a1ab414a053679c7fb0ed9c8726c943449f514472e3ac4f71e27011d";
 
     #[test]
     fn input_sha256_matches_python_fixture() {
         let r: Request = serde_json::from_str(FIXTURE).unwrap();
         assert_eq!(splat_input_sha256(&r).unwrap(), GOLDEN);
+    }
+
+    #[test]
+    fn rejects_request_json_without_modem() {
+        let no_modem = r#"{
+            "lat": 36.1,
+            "lon": -115.2,
+            "tx_height": 2.0,
+            "tx_power": 10.0,
+            "tx_gain": 2.0,
+            "frequency_mhz": 911.525,
+            "rx_height": 2.0,
+            "rx_gain": 2.0,
+            "signal_threshold": -112.0,
+            "clutter_height": 1.0,
+            "radius": 50000.0
+        }"#;
+        let err = serde_json::from_str::<Request>(no_modem).unwrap_err();
+        assert!(
+            err.to_string().contains("modem"),
+            "unexpected serde error: {err}"
+        );
     }
 }

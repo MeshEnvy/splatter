@@ -7,7 +7,7 @@
   "frequency_mhz": 911.525,
   "rx_height": 2.0,
   "rx_gain": 2.0,
-  "signal_threshold": -130.0,
+  "signal_threshold": -112.4753360200358,
   "clutter_height": 1.0,
   "ground_dielectric": 15.0,
   "ground_conductivity": 0.005,
@@ -22,5 +22,12 @@
   "colormap": "plasma",
   "min_dbm": -130.0,
   "max_dbm": -80.0,
-  "high_resolution": true
+  "high_resolution": true,
+  "modem": {
+    "spreading_factor": 7,
+    "bandwidth_khz": 62.5,
+    "coding_rate": 5,
+    "implementation_margin_db": 3.0,
+    "sensitivity_dbm": -121.0
+  }
 }

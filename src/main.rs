@@ -10,6 +10,7 @@ mod dem;
 mod engine;
 mod hash;
 mod kml;
+mod lora;
 mod ppm;
 
 use engine::run_coverage;

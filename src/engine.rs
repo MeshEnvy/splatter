@@ -10,6 +10,7 @@ use anyhow::{Context, Result};
 use crate::dem::DemMosaic;
 use crate::hash::{normalize, splat_input_sha256, Request as CovRequest, SPLAT_CACHE_SCHEMA_VERSION};
 use crate::kml;
+use crate::lora;
 use crate::ppm;
 use image::imageops::{self, FilterType};
 use image::{ImageBuffer, Rgba};
@@ -46,8 +47,27 @@ pub fn run_coverage(work_dir: &Path, verbose: bool) -> Result<()> {
         .with_context(|| format!("read {}", req_path.display()))?;
     let parsed: CovRequest =
         serde_json::from_str(&raw).context("parse request.json as SplatCoverageRequest")?;
-    let input_sha = splat_input_sha256(&parsed).context("input sha256")?;
     let req = normalize(parsed);
+    let input_sha = splat_input_sha256(&req).context("input sha256")?;
+
+    let sf: i32 = i32::try_from(req.modem.spreading_factor)
+        .with_context(|| format!("modem.spreading_factor={}", req.modem.spreading_factor))?;
+    let cr: i32 = i32::try_from(req.modem.coding_rate)
+        .with_context(|| format!("modem.coding_rate={}", req.modem.coding_rate))?;
+    let modem_view = lora::LoRaModemView {
+        spreading_factor: sf,
+        bandwidth_khz: req.modem.bandwidth_khz,
+        coding_rate: cr,
+        implementation_margin_db: req.modem.implementation_margin_db,
+        sensitivity_dbm: req.modem.sensitivity_dbm.as_ref(),
+    };
+    let threshold_dbm = lora::effective_signal_threshold_dbm(
+        &modem_view,
+        req.situation_fraction,
+        req.time_fraction,
+    )
+    .context("compute LoRa effective threshold")?;
+
     log(&format!(
         "TX {:.6},{:.6}  radius={:.0} m  {:.3} MHz  schema_sha256={}…",
         req.lat,
@@ -127,7 +147,7 @@ pub fn run_coverage(work_dir: &Path, verbose: bool) -> Result<()> {
                     - req.system_loss
                     - fspl
                     - diff_db;
-                if pr < req.signal_threshold {
+                if pr < threshold_dbm {
                     continue;
                 }
                 let c =
