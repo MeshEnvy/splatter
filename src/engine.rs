@@ -12,6 +12,7 @@ use crate::hash::{normalize, splat_input_sha256, Request as CovRequest, SPLAT_CA
 use crate::kml;
 use crate::lora;
 use crate::ppm;
+use crate::ray_cache::{initial_bearing_rad, RayTerrainCache, EARTH_RADIUS_M};
 use image::imageops::{self, FilterType};
 use image::{ImageBuffer, Rgba};
 use rayon::prelude::*;
@@ -19,8 +20,6 @@ use serde_json::json;
 
 /// Effective Earth radius factor (standard 4/3 atmosphere).
 const K_EFFECTIVE: f64 = 4.0 / 3.0;
-
-const EARTH_RADIUS_M: f64 = 6378137.0;
 
 pub fn run_coverage(work_dir: &Path, verbose: bool) -> Result<()> {
     let log = |msg: &str| {
@@ -107,6 +106,21 @@ pub fn run_coverage(work_dir: &Path, verbose: bool) -> Result<()> {
     let re_eff = K_EFFECTIVE * EARTH_RADIUS_M;
     let clutter = req.clutter_height.max(0.0);
     let fresnel_frac = req.fresnel_clearance_fraction;
+    let freq_hz = req.frequency_mhz * 1e6;
+    let z_tx_amsl = z_tx_base + req.tx_height;
+    let eirp_chain = req.tx_power + req.tx_gain + req.rx_gain - req.system_loss;
+    let cmap = req.colormap.trim().to_lowercase();
+
+    let num_rays = (w as usize * 4).max(720);
+    let terrain_cache = RayTerrainCache::build(
+        &dem,
+        req.lat,
+        req.lon,
+        req.radius,
+        num_rays,
+        clutter,
+        verbose,
+    );
 
     let mut rgb: Vec<u8> = vec![255u8; (w * h * 3) as usize];
 
@@ -126,32 +140,27 @@ pub fn run_coverage(work_dir: &Path, verbose: bool) -> Result<()> {
                 if d > req.radius {
                     continue;
                 }
-                let z_rx_ground = dem.sample_m(rlat, rlon);
+                let fspl = fspl_db(d, req.frequency_mhz);
+                if eirp_chain - fspl < threshold_dbm {
+                    continue;
+                }
+                let z_rx_amsl = dem.sample_m(rlat, rlon) + req.rx_height;
+                let bearing = initial_bearing_rad(req.lat, req.lon, rlat, rlon);
                 let diff_db = knife_edge_excess_loss_db(
-                    &dem,
-                    z_tx_base + req.tx_height,
-                    z_rx_ground + req.rx_height,
-                    req.lat,
-                    req.lon,
-                    rlat,
-                    rlon,
-                    clutter,
+                    &terrain_cache,
+                    bearing,
+                    d,
+                    z_tx_amsl,
+                    z_rx_amsl,
                     re_eff,
-                    req.frequency_mhz * 1e6,
+                    freq_hz,
                     fresnel_frac,
                 );
-                let fspl = fspl_db(d, req.frequency_mhz);
-                let pr = req.tx_power
-                    + req.tx_gain
-                    + req.rx_gain
-                    - req.system_loss
-                    - fspl
-                    - diff_db;
+                let pr = eirp_chain - fspl - diff_db;
                 if pr < threshold_dbm {
                     continue;
                 }
-                let c =
-                    dbm_to_rgb(pr, req.min_dbm, req.max_dbm, req.colormap.trim().to_lowercase());
+                let c = dbm_to_rgb(pr, req.min_dbm, req.max_dbm, &cmap);
                 row[off] = c[0];
                 row[off + 1] = c[1];
                 row[off + 2] = c[2];
@@ -301,32 +310,6 @@ fn haversine_m(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     EARTH_RADIUS_M * c
 }
 
-fn gc_interpolate(lat1: f64, lon1: f64, lat2: f64, lon2: f64, f: f64) -> (f64, f64) {
-    if f <= 0.0 {
-        return (lat1, lon1);
-    }
-    if f >= 1.0 {
-        return (lat2, lon2);
-    }
-    let lat1r = lat1.to_radians();
-    let lon1r = lon1.to_radians();
-    let lat2r = lat2.to_radians();
-    let lon2r = lon2.to_radians();
-    let cdot = lat1r.sin() * lat2r.sin() + lat1r.cos() * lat2r.cos() * (lon1r - lon2r).cos();
-    let d = cdot.clamp(-1.0, 1.0).acos();
-    if d < 1e-12 {
-        return (lat1, lon1);
-    }
-    let a = ((1.0 - f) * d).sin() / d.sin();
-    let b = (f * d).sin() / d.sin();
-    let x = a * lat1r.cos() * lon1r.cos() + b * lat2r.cos() * lon2r.cos();
-    let y = a * lat1r.cos() * lon1r.sin() + b * lat2r.cos() * lon2r.sin();
-    let z = a * lat1r.sin() + b * lat2r.sin();
-    let lat = z.atan2((x * x + y * y).sqrt());
-    let lon = y.atan2(x);
-    (lat.to_degrees(), lon.to_degrees())
-}
-
 /// ITU-R P.526-style excess diffraction loss (dB) for a single knife-edge, normalized height ν.
 fn itu_p526_single_knife_edge_loss_db(nu: f64) -> f64 {
     if nu < -0.78 {
@@ -339,38 +322,33 @@ fn itu_p526_single_knife_edge_loss_db(nu: f64) -> f64 {
     (6.9 + 20.0 * inner.log10()).clamp(0.0, 120.0)
 }
 
-/// Dominant single-edge excess loss along the TX–RX profile.
-///
-/// Obstruction height is measured above the Fresnel clearance floor (`LOS − F₁·fraction`),
-/// matching the old binary Fresnel test but replacing hard blocking with P.526 knife-edge loss.
-/// The worst ν among interior profile samples selects the dominant edge (pragmatic for multi-ridge paths).
+/// Dominant single-edge excess loss using precomputed ray terrain (no per-pixel DEM sampling).
 fn knife_edge_excess_loss_db(
-    dem: &DemMosaic,
+    cache: &RayTerrainCache,
+    bearing_rad: f64,
+    distance_m: f64,
     z_tx_amsl: f64,
     z_rx_amsl: f64,
-    tx_lat: f64,
-    tx_lon: f64,
-    rx_lat: f64,
-    rx_lon: f64,
-    clutter_m: f64,
     re_eff: f64,
     freq_hz: f64,
     fresnel_clearance_frac: f64,
 ) -> f64 {
-    let d = haversine_m(tx_lat, tx_lon, rx_lat, rx_lon);
+    let d = distance_m;
     if d < 2.0 {
         return 0.0;
     }
+    let steps = cache.profile_step_count(d);
+    if steps < 2 {
+        return 0.0;
+    }
     let wl = 299_792_458.0 / freq_hz;
-    let steps = ((d / 30.0).ceil() as usize).clamp(40, 2048);
     let mut nu_max: Option<f64> = None;
     for i in 1..steps {
         let frac = i as f64 / steps as f64;
-        let (la, lo) = gc_interpolate(tx_lat, tx_lon, rx_lat, rx_lon, frac);
         let s = frac * d;
         let h_line =
             z_tx_amsl * (1.0 - s / d) + z_rx_amsl * (s / d) - s * (d - s) / (2.0 * re_eff);
-        let terr = dem.sample_m(la, lo) + clutter_m;
+        let terr = cache.terrain_at(bearing_rad, s);
         let d1 = s;
         let d2 = d - s;
         if d1 < 2.0 || d2 < 2.0 {
@@ -412,7 +390,7 @@ fn fspl_db(distance_m: f64, freq_mhz: f64) -> f64 {
     20.0 * d_km.log10() + 20.0 * freq_mhz.max(1e-6).log10() + 32.44
 }
 
-fn dbm_to_rgb(pr_dbm: f64, min_dbm: f64, max_dbm: f64, cmap: String) -> [u8; 3] {
+fn dbm_to_rgb(pr_dbm: f64, min_dbm: f64, max_dbm: f64, cmap: &str) -> [u8; 3] {
     let lo = min_dbm.min(max_dbm);
     let hi = min_dbm.max(max_dbm);
     let t = if hi <= lo {
@@ -420,7 +398,7 @@ fn dbm_to_rgb(pr_dbm: f64, min_dbm: f64, max_dbm: f64, cmap: String) -> [u8; 3] 
     } else {
         ((pr_dbm - lo) / (hi - lo)).clamp(0.0, 1.0)
     };
-    match cmap.as_str() {
+    match cmap {
         "plasma" => plasma_rgb(t),
         "rainbow" | "jet" => rainbow_rgb(t),
         _ => plasma_rgb(t),

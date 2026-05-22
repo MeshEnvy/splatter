@@ -64,8 +64,10 @@ fn elev_m(buf: &[i16], n: usize, ix: usize, iy: usize) -> f64 {
     v as f64
 }
 
+type TileCoord = (i32, i32);
+
 pub struct DemMosaic {
-    tiles: HashMap<String, DemTile>,
+    tiles: HashMap<TileCoord, DemTile>,
 }
 
 impl DemMosaic {
@@ -80,27 +82,30 @@ impl DemMosaic {
                 eprintln!("[splatter] DEM load {}", path.display());
             }
             let tile = load_hgt_gz(&path).with_context(|| format!("load {}", path.display()))?;
+            let stem = stem_key(name);
+            let coord = tile_coord_from_stem(&stem)?;
             if verbose {
                 eprintln!(
                     "[splatter] DEM tile {} → {}×{} samples",
-                    stem_key(name),
-                    tile.n,
-                    tile.n
+                    stem, tile.n, tile.n
                 );
             }
-            tiles.insert(stem_key(name), tile);
+            tiles.insert(coord, tile);
         }
         Ok(Self { tiles })
     }
 
     pub fn sample_m(&self, lat: f64, lon: f64) -> f64 {
-        let key = tile_name_for_lat_lon(lat, lon);
-        let stem = stem_key(&key);
-        let Some(tile) = self.tiles.get(&stem) else {
+        let key = tile_coord_for_lat_lon(lat, lon);
+        let Some(tile) = self.tiles.get(&key) else {
             return 0.0;
         };
         tile.sample_m(lat, lon)
     }
+}
+
+fn tile_coord_for_lat_lon(lat: f64, lon: f64) -> TileCoord {
+    (lat.floor() as i32, lon.floor() as i32)
 }
 
 fn stem_key(tile_name: &str) -> String {
@@ -110,19 +115,9 @@ fn stem_key(tile_name: &str) -> String {
         .to_string()
 }
 
-/// Derive Skadi cell key ``N36W117`` style stem from WGS84 point (cell interior).
-pub fn tile_name_for_lat_lon(lat: f64, lon: f64) -> String {
-    let lat_tile = lat.floor() as i32;
-    let lon_tile = lon.floor() as i32;
-    let ns = if lat_tile >= 0 { 'N' } else { 'S' };
-    let ew = if lon_tile >= 0 { 'E' } else { 'W' };
-    format!(
-        "{}{}{}{:03}.hgt.gz",
-        ns,
-        lat_tile.abs(),
-        ew,
-        lon_tile.abs()
-    )
+fn tile_coord_from_stem(stem: &str) -> Result<TileCoord> {
+    let (sw_lat, sw_lon) = parse_tile_sw_corner(stem)?;
+    Ok((sw_lat as i32, sw_lon as i32))
 }
 
 fn load_hgt_gz(path: &Path) -> Result<DemTile> {

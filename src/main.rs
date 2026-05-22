@@ -12,6 +12,7 @@ mod hash;
 mod kml;
 mod lora;
 mod ppm;
+mod ray_cache;
 
 use engine::run_coverage;
 use hash::{splat_input_sha256, Request as CovRequest};
