@@ -3,10 +3,12 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 use flate2::read::GzDecoder;
+
+use crate::skadi_fetch::ensure_mirror_tile;
 
 pub const VOID_SRTM: i16 = -32768;
 
@@ -74,10 +76,8 @@ impl DemMosaic {
     pub fn load_mirror(mirror_root: &Path, tile_names: &[String], verbose: bool) -> Result<Self> {
         let mut tiles = HashMap::new();
         for name in tile_names {
-            let path: PathBuf = mirror_root.join(name);
-            if !path.is_file() {
-                bail!("missing DEM mirror tile {} (expected {})", name, path.display());
-            }
+            let path = ensure_mirror_tile(mirror_root, name, verbose)
+                .with_context(|| format!("ensure mirror tile {name}"))?;
             if verbose {
                 eprintln!("[splatter] DEM load {}", path.display());
             }

@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 mod dem;
+mod skadi_fetch;
 mod engine;
 mod hash;
 mod kml;

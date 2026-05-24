@@ -16,7 +16,7 @@ docker build -t splatter:latest .
 
 ## Run
 
-Container entry reads `/work/request.json`, loads Skadi HGT tiles from `SPLAT_CACHE`, writes SPLAT-shaped outputs into the work dir.
+Container entry reads `/work/request.json`, loads Skadi HGT tiles from `SPLAT_CACHE` (fetching missing tiles from public Skadi S3 on demand), writes SPLAT-shaped outputs into the work dir.
 
 ```bash
 docker run --rm \
