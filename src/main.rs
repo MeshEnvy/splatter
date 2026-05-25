@@ -15,7 +15,7 @@ mod lora;
 mod ppm;
 mod ray_cache;
 
-use engine::run_coverage;
+use engine::{run_batch_coverage, run_coverage};
 use hash::{splat_input_sha256, Request as CovRequest};
 
 #[derive(Parser)]
@@ -27,11 +27,18 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run coverage into `--work-dir` (Docker default).
+    /// Run one coverage request from ``request.json`` (object) into ``--work-dir``.
     Run {
         #[arg(long, default_value = "/work")]
         work_dir: PathBuf,
         /// Progress messages on stderr (mirror, tiles, raster phases).
+        #[arg(short, long)]
+        verbose: bool,
+    },
+    /// Run many requests from ``request.json`` (array); writes ``<work-dir>/<digest>/`` per entry.
+    RunBatch {
+        #[arg(long, default_value = "/work")]
+        work_dir: PathBuf,
         #[arg(short, long)]
         verbose: bool,
     },
@@ -50,6 +57,11 @@ fn main() -> Result<()> {
             verbose,
         } => run_coverage(&work_dir, verbose)
             .with_context(|| format!("run coverage work_dir={}", work_dir.display())),
+        Command::RunBatch {
+            work_dir,
+            verbose,
+        } => run_batch_coverage(&work_dir, verbose)
+            .with_context(|| format!("run batch work_dir={}", work_dir.display())),
         Command::InputSha256 { request } => {
             let raw =
                 fs::read_to_string(&request).with_context(|| request.display().to_string())?;

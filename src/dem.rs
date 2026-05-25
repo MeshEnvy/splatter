@@ -7,6 +7,7 @@ use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 use flate2::read::GzDecoder;
+use rayon::prelude::*;
 
 use crate::skadi_fetch::ensure_mirror_tile;
 
@@ -74,23 +75,41 @@ pub struct DemMosaic {
 
 impl DemMosaic {
     pub fn load_mirror(mirror_root: &Path, tile_names: &[String], verbose: bool) -> Result<Self> {
-        let mut tiles = HashMap::new();
-        for name in tile_names {
-            let path = ensure_mirror_tile(mirror_root, name, verbose)
-                .with_context(|| format!("ensure mirror tile {name}"))?;
-            if verbose {
-                eprintln!("[splatter] DEM load {}", path.display());
-            }
-            let tile = load_hgt_gz(&path).with_context(|| format!("load {}", path.display()))?;
-            let stem = stem_key(name);
-            let coord = tile_coord_from_stem(&stem)?;
-            if verbose {
-                eprintln!(
-                    "[splatter] DEM tile {} → {}×{} samples",
-                    stem, tile.n, tile.n
-                );
-            }
+        if verbose {
+            eprintln!(
+                "[splatter] DEM mirror load start: {} tile(s)",
+                tile_names.len()
+            );
+        }
+        let loaded: Vec<(TileCoord, DemTile)> = tile_names
+            .par_iter()
+            .map(|name| {
+                let path = ensure_mirror_tile(mirror_root, name, verbose)
+                    .with_context(|| format!("ensure mirror tile {name}"))?;
+                if verbose {
+                    eprintln!("[splatter] DEM load {}", path.display());
+                }
+                let tile = load_hgt_gz(&path).with_context(|| format!("load {}", path.display()))?;
+                let stem = stem_key(name);
+                let coord = tile_coord_from_stem(&stem)?;
+                if verbose {
+                    eprintln!(
+                        "[splatter] DEM tile {} → {}×{} samples",
+                        stem, tile.n, tile.n
+                    );
+                }
+                Ok((coord, tile))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let mut tiles = HashMap::with_capacity(loaded.len());
+        for (coord, tile) in loaded {
             tiles.insert(coord, tile);
+        }
+        if verbose {
+            eprintln!(
+                "[splatter] DEM mirror load done: {} tile(s) in mosaic",
+                tiles.len()
+            );
         }
         Ok(Self { tiles })
     }

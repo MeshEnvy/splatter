@@ -12,6 +12,7 @@
 #     -e SPLAT_CACHE=/splat_cache \
 #     splatter:latest run --work-dir /work
 # Add ``--verbose`` (or ``-v``) for stderr progress (tiles, DEM load, raster rows).
+# Batch: ``run-batch --work-dir /work`` with array ``request.json`` at the mount root.
 
 FROM rust:bookworm AS builder
 WORKDIR /src

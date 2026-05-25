@@ -1,12 +1,12 @@
 //! Fresnel-aware knife-edge diffraction (ITU-R P.526 style) + FSPL → SPLAT-shaped outputs.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use crate::dem::DemMosaic;
 use crate::hash::{normalize, splat_input_sha256, Request as CovRequest, SPLAT_CACHE_SCHEMA_VERSION};
 use crate::kml;
@@ -21,6 +21,26 @@ use serde_json::json;
 /// Effective Earth radius factor (standard 4/3 atmosphere).
 const K_EFFECTIVE: f64 = 4.0 / 3.0;
 
+struct PreparedJob {
+    req: CovRequest,
+    input_sha: String,
+    threshold_dbm: f64,
+}
+
+fn mirror_root_from_work_dir(work_dir: &Path) -> PathBuf {
+    std::env::var("SPLAT_CACHE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| work_dir.join(".tile_cache"))
+}
+
+fn batch_jobs_from_env() -> usize {
+    std::env::var("PEAKY_SPLATTER_BATCH_JOBS")
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .filter(|n| *n >= 1)
+        .unwrap_or_else(|| rayon::current_num_threads().max(1))
+}
+
 pub fn run_coverage(work_dir: &Path, verbose: bool) -> Result<()> {
     let log = |msg: &str| {
         if verbose {
@@ -28,13 +48,7 @@ pub fn run_coverage(work_dir: &Path, verbose: bool) -> Result<()> {
         }
     };
 
-    let mirror = std::env::var("SPLAT_CACHE").unwrap_or_else(|_| {
-        work_dir
-            .join(".tile_cache")
-            .to_string_lossy()
-            .into_owned()
-    });
-    let mirror_root = Path::new(&mirror);
+    let mirror_root = mirror_root_from_work_dir(work_dir);
     log(&format!(
         "work_dir={}  SPLAT_CACHE={}",
         work_dir.display(),
@@ -46,9 +60,127 @@ pub fn run_coverage(work_dir: &Path, verbose: bool) -> Result<()> {
         .with_context(|| format!("read {}", req_path.display()))?;
     let parsed: CovRequest =
         serde_json::from_str(&raw).context("parse request.json as SplatCoverageRequest")?;
+    let job = prepare_job(parsed)?;
+    let tiles = required_tile_names(job.req.lat, job.req.lon, job.req.radius);
+    log(&format!(
+        "DEM mirror: {} tile(s): {}",
+        tiles.len(),
+        tiles.join(", ")
+    ));
+    let dem = DemMosaic::load_mirror(&mirror_root, &tiles, verbose).context("DEM mosaic")?;
+    run_one_coverage(&job, &dem, work_dir, verbose, true).context("single coverage run")?;
+    log("done.");
+    Ok(())
+}
+
+pub fn run_batch_coverage(work_dir: &Path, verbose: bool) -> Result<()> {
+    let log = |msg: &str| {
+        if verbose {
+            eprintln!("[splatter] {}", msg);
+        }
+    };
+
+    let mirror_root = mirror_root_from_work_dir(work_dir);
+    log(&format!(
+        "batch work_dir={}  SPLAT_CACHE={}",
+        work_dir.display(),
+        mirror_root.display()
+    ));
+
+    let req_path = work_dir.join("request.json");
+    let raw = fs::read_to_string(&req_path)
+        .with_context(|| format!("read {}", req_path.display()))?;
+    let requests: Vec<CovRequest> =
+        serde_json::from_str(&raw).context("parse request.json as [SplatCoverageRequest]")?;
+    if requests.is_empty() {
+        bail!("batch request.json must contain at least one coverage request");
+    }
+
+    let started = Instant::now();
+    let jobs: Vec<PreparedJob> = requests
+        .into_iter()
+        .map(prepare_job)
+        .collect::<Result<Vec<_>>>()?;
+
+    let mut tile_set: Vec<String> = Vec::new();
+    for job in &jobs {
+        tile_set.extend(required_tile_names(job.req.lat, job.req.lon, job.req.radius));
+    }
+    tile_set.sort();
+    tile_set.dedup();
+
+    log(&format!(
+        "batch: {} request(s), {} unique DEM tile(s)",
+        jobs.len(),
+        tile_set.len()
+    ));
+    let dem = DemMosaic::load_mirror(&mirror_root, &tile_set, verbose).context("DEM mosaic")?;
+    if verbose {
+        log(&format!(
+            "batch DEM preload done ({:.2}s)",
+            started.elapsed().as_secs_f64()
+        ));
+    }
+
+    let batch_workers = batch_jobs_from_env().min(jobs.len().max(1));
+    log(&format!("batch coverage workers={batch_workers}"));
+
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(batch_workers)
+        .build()
+        .context("build batch thread pool")?;
+
+    let done = AtomicUsize::new(0);
+    let fail_mx = Mutex::new(None::<anyhow::Error>);
+
+    pool.install(|| {
+        jobs.par_iter().for_each(|job| {
+            if fail_mx.lock().unwrap().is_some() {
+                return;
+            }
+            let out_dir = work_dir.join(&job.input_sha);
+            if let Err(e) = fs::create_dir_all(&out_dir).with_context(|| {
+                format!("create output dir {}", out_dir.display())
+            }) {
+                *fail_mx.lock().unwrap() = Some(e);
+                return;
+            }
+            let result = run_one_coverage(job, &dem, &out_dir, verbose, false)
+                .with_context(|| format!("coverage digest={}", job.input_sha));
+            match result {
+                Ok(()) => {
+                    let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+                    if verbose {
+                        eprintln!(
+                            "[splatter] batch completed {}/{} digest={}…",
+                            n,
+                            jobs.len(),
+                            &job.input_sha[..12.min(job.input_sha.len())]
+                        );
+                    }
+                }
+                Err(e) => {
+                    *fail_mx.lock().unwrap() = Some(e);
+                }
+            }
+        });
+    });
+
+    if let Some(err) = fail_mx.lock().unwrap().take() {
+        return Err(err);
+    }
+
+    log(&format!(
+        "batch done: {} request(s) in {:.2}s",
+        jobs.len(),
+        started.elapsed().as_secs_f64()
+    ));
+    Ok(())
+}
+
+fn prepare_job(parsed: CovRequest) -> Result<PreparedJob> {
     let req = normalize(parsed);
     let input_sha = splat_input_sha256(&req).context("input sha256")?;
-
     let sf: i32 = i32::try_from(req.modem.spreading_factor)
         .with_context(|| format!("modem.spreading_factor={}", req.modem.spreading_factor))?;
     let cr: i32 = i32::try_from(req.modem.coding_rate)
@@ -66,6 +198,29 @@ pub fn run_coverage(work_dir: &Path, verbose: bool) -> Result<()> {
         req.time_fraction,
     )
     .context("compute LoRa effective threshold")?;
+    Ok(PreparedJob {
+        req,
+        input_sha,
+        threshold_dbm,
+    })
+}
+
+fn run_one_coverage(
+    job: &PreparedJob,
+    dem: &DemMosaic,
+    work_dir: &Path,
+    verbose: bool,
+    parallel_rows: bool,
+) -> Result<()> {
+    let log = |msg: &str| {
+        if verbose {
+            eprintln!("[splatter] {}", msg);
+        }
+    };
+
+    let req = &job.req;
+    let input_sha = &job.input_sha;
+    let threshold_dbm = job.threshold_dbm;
 
     log(&format!(
         "TX {:.6},{:.6}  radius={:.0} m  {:.3} MHz  schema_sha256={}…",
@@ -75,14 +230,6 @@ pub fn run_coverage(work_dir: &Path, verbose: bool) -> Result<()> {
         req.frequency_mhz,
         &input_sha[..12.min(input_sha.len())]
     ));
-
-    let tiles = required_tile_names(req.lat, req.lon, req.radius);
-    log(&format!(
-        "DEM mirror: {} tile(s): {}",
-        tiles.len(),
-        tiles.join(", ")
-    ));
-    let dem = DemMosaic::load_mirror(mirror_root, &tiles, verbose).context("DEM mosaic")?;
 
     let z_tx_base = dem.sample_m(req.lat, req.lon);
     log(&format!(
@@ -113,7 +260,7 @@ pub fn run_coverage(work_dir: &Path, verbose: bool) -> Result<()> {
 
     let num_rays = (w as usize * 4).max(720);
     let terrain_cache = RayTerrainCache::build(
-        &dem,
+        dem,
         req.lat,
         req.lon,
         req.radius,
@@ -129,57 +276,66 @@ pub fn run_coverage(work_dir: &Path, verbose: bool) -> Result<()> {
     let log_mx = Mutex::new(());
     let report_every = ((h as usize) / 20).max(1);
 
-    let rows: Vec<Vec<u8>> = (0..h)
-        .into_par_iter()
-        .map(|py| {
-            let mut row = vec![255u8; (w * 3) as usize];
-            for px in 0..w {
-                let (rlat, rlon) = pixel_lat_lon(px, py, w, h, north, south, east, west);
-                let d = haversine_m(req.lat, req.lon, rlat, rlon);
-                let off = (px * 3) as usize;
-                if d > req.radius {
-                    continue;
-                }
-                let fspl = fspl_db(d, req.frequency_mhz);
-                if eirp_chain - fspl < threshold_dbm {
-                    continue;
-                }
-                let z_rx_amsl = dem.sample_m(rlat, rlon) + req.rx_height;
-                let bearing = initial_bearing_rad(req.lat, req.lon, rlat, rlon);
-                let diff_db = knife_edge_excess_loss_db(
+    let rows: Vec<Vec<u8>> = if parallel_rows {
+        (0..h)
+            .into_par_iter()
+            .map(|py| {
+                raster_row(
+                    py,
+                    w,
+                    h,
+                    north,
+                    south,
+                    east,
+                    west,
+                    req,
+                    dem,
                     &terrain_cache,
-                    bearing,
-                    d,
-                    z_tx_amsl,
-                    z_rx_amsl,
                     re_eff,
                     freq_hz,
                     fresnel_frac,
-                );
-                let pr = eirp_chain - fspl - diff_db;
-                if pr < threshold_dbm {
-                    continue;
-                }
-                let c = dbm_to_rgb(pr, req.min_dbm, req.max_dbm, &cmap);
-                row[off] = c[0];
-                row[off + 1] = c[1];
-                row[off + 2] = c[2];
-            }
-            if verbose {
-                let n = rows_done.fetch_add(1, Ordering::Relaxed) + 1;
-                if n % report_every == 0 || n == h as usize {
-                    let _lk = log_mx.lock().unwrap();
-                    eprintln!(
-                        "[splatter] raster rows completed {}/{} ({:.1}s)",
-                        n,
-                        h,
-                        raster_started.elapsed().as_secs_f64()
-                    );
-                }
-            }
-            row
-        })
-        .collect();
+                    z_tx_amsl,
+                    eirp_chain,
+                    threshold_dbm,
+                    &cmap,
+                    verbose,
+                    &rows_done,
+                    &log_mx,
+                    report_every,
+                    raster_started,
+                )
+            })
+            .collect()
+    } else {
+        (0..h)
+            .map(|py| {
+                raster_row(
+                    py,
+                    w,
+                    h,
+                    north,
+                    south,
+                    east,
+                    west,
+                    req,
+                    dem,
+                    &terrain_cache,
+                    re_eff,
+                    freq_hz,
+                    fresnel_frac,
+                    z_tx_amsl,
+                    eirp_chain,
+                    threshold_dbm,
+                    &cmap,
+                    verbose,
+                    &rows_done,
+                    &log_mx,
+                    report_every,
+                    raster_started,
+                )
+            })
+            .collect()
+    };
 
     if verbose {
         log(&format!(
@@ -194,12 +350,14 @@ pub fn run_coverage(work_dir: &Path, verbose: bool) -> Result<()> {
         rgb[base..base + row.len()].copy_from_slice(row);
     }
 
+    fs::create_dir_all(work_dir)
+        .with_context(|| format!("create {}", work_dir.display()))?;
+
     let ppm_path = work_dir.join("output.ppm");
     log(&format!("writing {}", ppm_path.display()));
     ppm::write_ppm_rgb(&ppm_path, w, h, &rgb).context("write output.ppm")?;
 
-    let kml_txt =
-        kml::ground_overlay_kml("Splatter coverage", north, south, east, west, 0.0);
+    let kml_txt = kml::ground_overlay_kml("Splatter coverage", north, south, east, west, 0.0);
     log("writing output.kml");
     fs::write(work_dir.join("output.kml"), kml_txt).context("write output.kml")?;
 
@@ -231,8 +389,80 @@ pub fn run_coverage(work_dir: &Path, verbose: bool) -> Result<()> {
     )
     .context("write manifest.json")?;
 
-    log("done.");
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn raster_row(
+    py: u32,
+    w: u32,
+    h: u32,
+    north: f64,
+    south: f64,
+    east: f64,
+    west: f64,
+    req: &CovRequest,
+    dem: &DemMosaic,
+    terrain_cache: &RayTerrainCache,
+    re_eff: f64,
+    freq_hz: f64,
+    fresnel_frac: f64,
+    z_tx_amsl: f64,
+    eirp_chain: f64,
+    threshold_dbm: f64,
+    cmap: &str,
+    verbose: bool,
+    rows_done: &AtomicUsize,
+    log_mx: &Mutex<()>,
+    report_every: usize,
+    raster_started: Instant,
+) -> Vec<u8> {
+    let mut row = vec![255u8; (w * 3) as usize];
+    for px in 0..w {
+        let (rlat, rlon) = pixel_lat_lon(px, py, w, h, north, south, east, west);
+        let d = haversine_m(req.lat, req.lon, rlat, rlon);
+        let off = (px * 3) as usize;
+        if d > req.radius {
+            continue;
+        }
+        let fspl = fspl_db(d, req.frequency_mhz);
+        if eirp_chain - fspl < threshold_dbm {
+            continue;
+        }
+        let z_rx_amsl = dem.sample_m(rlat, rlon) + req.rx_height;
+        let bearing = initial_bearing_rad(req.lat, req.lon, rlat, rlon);
+        let diff_db = knife_edge_excess_loss_db(
+            terrain_cache,
+            bearing,
+            d,
+            z_tx_amsl,
+            z_rx_amsl,
+            re_eff,
+            freq_hz,
+            fresnel_frac,
+        );
+        let pr = eirp_chain - fspl - diff_db;
+        if pr < threshold_dbm {
+            continue;
+        }
+        let c = dbm_to_rgb(pr, req.min_dbm, req.max_dbm, cmap);
+        row[off] = c[0];
+        row[off + 1] = c[1];
+        row[off + 2] = c[2];
+    }
+    if verbose {
+        let n = rows_done.fetch_add(1, Ordering::Relaxed) + 1;
+        if n % report_every == 0 || n == h as usize {
+            let _lk = log_mx.lock().unwrap();
+            eprintln!(
+                "[splatter] raster rows completed {}/{} ({:.1}s)",
+                n,
+                h,
+                raster_started.elapsed().as_secs_f64()
+            );
+        }
+    }
+    row
 }
 
 fn required_tile_names(lat: f64, lon: f64, radius_m: f64) -> Vec<String> {
@@ -304,8 +534,7 @@ fn haversine_m(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     let p2 = lat2.to_radians();
     let dl = (lon2 - lon1).to_radians();
     let dp = (lat2 - lat1).to_radians();
-    let a =
-        (dp / 2.0).sin().powi(2) + p1.cos() * p2.cos() * (dl / 2.0).sin().powi(2);
+    let a = (dp / 2.0).sin().powi(2) + p1.cos() * p2.cos() * (dl / 2.0).sin().powi(2);
     let c = 2.0 * a.sqrt().atan2((1.0 - a).sqrt());
     EARTH_RADIUS_M * c
 }

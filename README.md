@@ -16,13 +16,28 @@ docker build -t splatter:latest .
 
 ## Run
 
-Container entry reads `/work/request.json`, loads Skadi HGT tiles from `SPLAT_CACHE` (fetching missing tiles from public Skadi S3 on demand), writes SPLAT-shaped outputs into the work dir.
+Container entry reads `/work/request.json`:
+
+- **Single site:** object → `splatter run --work-dir /work`
+- **Batch:** JSON array → `splatter run-batch --work-dir /work` → writes `/work/<digest>/` per request
+
+Loads Skadi HGT tiles from `SPLAT_CACHE` (fetching missing tiles from public Skadi S3 on demand), writes SPLAT-shaped outputs into each workspace dir.
 
 ```bash
 docker run --rm \
   -v "$SITE:/work" -v "$MIRROR:/splat_cache" \
   -e SPLAT_CACHE=/splat_cache \
   splatter:latest run --work-dir /work --verbose
+```
+
+Batch (array `request.json` at viewsheds root, e.g. from ``peaky build`` when multiple LOS workspaces are stale):
+
+```bash
+docker run --rm \
+  -v "$VIEWSHEDS:/work" -v "$MIRROR:/splat_cache" \
+  -e SPLAT_CACHE=/splat_cache \
+  -e PEAKY_SPLATTER_BATCH_JOBS=8 \
+  splatter:latest run-batch --work-dir /work --verbose
 ```
 
 Input hash parity with peaky_finders:
