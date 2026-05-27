@@ -4,8 +4,8 @@
 # Usage: DIGEST="<64 hex chars>" ./test-los.sh
 #    or: SITE=/abs/path/to/viewshed/dir ./test-los.sh   (workspace contains request.json …)
 #
-# Obtain ``DIGEST`` from ``peaky`` stdout (``Viewshed cache root``) plus the folder created for your preset,
-# or ``ls ~/.cache/viewsheds`` (default cache base when preset has no cache_path).
+# Obtain ``DIGEST`` as the 64-char hex workspace folder name under your viewsheds cache root,
+# or ``ls ~/.cache/viewsheds`` when using the default cache layout.
 #
 # Progress goes to stderr ([splatter] …). Quiet: VERBOSE=0 ./test-los.sh …
 set -euo pipefail

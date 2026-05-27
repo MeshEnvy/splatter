@@ -1,4 +1,4 @@
-//! Public Skadi SRTM tile fetch (``elevation-tiles-prod``), matching ``peaky_finders.skadi_dem``.
+//! Public Skadi SRTM tile fetch (``elevation-tiles-prod`` on AWS S3).
 
 use std::fs;
 use std::io::Write;

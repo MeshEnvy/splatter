@@ -30,17 +30,17 @@ docker run --rm \
   splatter:latest run --work-dir /work --verbose
 ```
 
-Batch (array `request.json` at viewsheds root, e.g. from ``peaky build`` when multiple LOS workspaces are stale):
+Batch (array `request.json` at viewsheds root when many workspaces share one container run):
 
 ```bash
 docker run --rm \
   -v "$VIEWSHEDS:/work" -v "$MIRROR:/splat_cache" \
   -e SPLAT_CACHE=/splat_cache \
-  -e PEAKY_SPLATTER_BATCH_JOBS=8 \
+  -e SPLATTER_BATCH_JOBS=8 \
   splatter:latest run-batch --work-dir /work --verbose
 ```
 
-Input hash parity with peaky_finders:
+Input hash (stable digest for workspace cache keys):
 
 ```bash
 splatter input-sha256 --request /path/to/request.json
@@ -52,4 +52,4 @@ splatter input-sha256 --request /path/to/request.json
 cargo test
 ```
 
-Golden hash fixture lives in `tests/fixtures/splat_request_hash_fixture.json` (mirrors peaky_finders Python tests).
+Golden hash fixture: `tests/fixtures/splat_request_hash_fixture.json`.

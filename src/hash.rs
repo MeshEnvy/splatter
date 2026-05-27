@@ -1,11 +1,11 @@
-//! Canonical input hash matching peaky_finders ``splat_input_hash`` (schema v6).
+//! Canonical input hash for cache/workspace grouping (schema v6).
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-/// Must match ``SPLAT_CACHE_SCHEMA_VERSION`` in ``splat_input_hash.py``.
+/// Bump when normalization or coverage semantics change.
 pub const SPLAT_CACHE_SCHEMA_VERSION: i64 = 6;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -130,7 +130,7 @@ fn sort_json_value(v: &Value) -> Value {
     }
 }
 
-/// SHA-256 hex digest matching ``splat_input_sha256`` / ``normalize_splat_request``.
+/// SHA-256 hex digest of normalized request JSON (schema ``v`` + sorted keys).
 pub fn splat_input_sha256(req: &Request) -> Result<String> {
     let n = normalize(req.clone());
     let req_val = serde_json::to_value(&n).context("request to JSON Value")?;
@@ -154,7 +154,7 @@ mod tests {
         "c08c8569a1ab414a053679c7fb0ed9c8726c943449f514472e3ac4f71e27011d";
 
     #[test]
-    fn input_sha256_matches_python_fixture() {
+    fn input_sha256_matches_golden_fixture() {
         let r: Request = serde_json::from_str(FIXTURE).unwrap();
         assert_eq!(splat_input_sha256(&r).unwrap(), GOLDEN);
     }

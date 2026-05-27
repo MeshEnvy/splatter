@@ -34,7 +34,7 @@ fn mirror_root_from_work_dir(work_dir: &Path) -> PathBuf {
 }
 
 fn batch_jobs_from_env() -> usize {
-    std::env::var("PEAKY_SPLATTER_BATCH_JOBS")
+    std::env::var("SPLATTER_BATCH_JOBS")
         .ok()
         .and_then(|s| s.trim().parse().ok())
         .filter(|n| *n >= 1)
@@ -679,7 +679,7 @@ fn hsv_to_rgb(h: f64, s: f64, v: f64) -> [u8; 3] {
 }
 
 fn overlay_max_edge_from_env() -> Option<u32> {
-    match std::env::var("PEAKY_SPLAT_OVERLAY_MAX_EDGE") {
+    match std::env::var("SPLATTER_OVERLAY_MAX_EDGE") {
         Ok(s) => {
             let s = s.trim();
             if s.is_empty() || s.eq_ignore_ascii_case("none") {

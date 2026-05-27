@@ -42,7 +42,7 @@ enum Command {
         #[arg(short, long)]
         verbose: bool,
     },
-    /// Print ``splat_input_sha256`` for a ``request.json`` (host parity checks).
+    /// Print ``splat_input_sha256`` for a ``request.json`` (cache key / contract checks).
     InputSha256 {
         #[arg(long)]
         request: PathBuf,

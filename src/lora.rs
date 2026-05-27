@@ -1,9 +1,9 @@
-//! LoRa modem decode threshold + SPLAT-aligned reliability margin (mirrors peaky preset_mapping.py).
+//! LoRa modem decode threshold + SPLAT-aligned reliability margin.
 
 use anyhow::{bail, Result};
 use statrs::distribution::{ContinuousCDF, Normal};
 
-/// Must match `_RELIABILITY_SIGMA_DB` in ``preset_mapping.py``.
+/// ITU-R P.526 / SPLAT-style log-normal fade margin scale (dB).
 pub const RELIABILITY_SIGMA_DB: f64 = 2.375;
 
 /// Semtech-reference sensitivity at 125 kHz BW (dBm).
