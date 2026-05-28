@@ -70,6 +70,44 @@ impl PySession {
         py.allow_threads(|| self.inner.run_batch(&path, jobs, requests_json))
             .map_err(map_err)
     }
+
+    fn ensure_tiles_for_points(
+        &self,
+        py: Python<'_>,
+        points: Vec<(f64, f64)>,
+        buffer_m: f64,
+    ) -> PyResult<()> {
+        py.allow_threads(|| self.inner.ensure_tiles_for_points(&points, buffer_m))
+            .map_err(map_err)
+    }
+
+    #[pyo3(signature = (lat_a, lon_a, lat_b, lon_b, rf_json))]
+    fn link_mutual_viable(
+        &self,
+        py: Python<'_>,
+        lat_a: f64,
+        lon_a: f64,
+        lat_b: f64,
+        lon_b: f64,
+        rf_json: &str,
+    ) -> PyResult<bool> {
+        py.allow_threads(|| {
+            self.inner
+                .link_mutual_viable(lat_a, lon_a, lat_b, lon_b, rf_json)
+        })
+        .map_err(map_err)
+    }
+
+    #[pyo3(signature = (pairs, rf_json))]
+    fn link_mutual_batch(
+        &self,
+        py: Python<'_>,
+        pairs: Vec<(f64, f64, f64, f64)>,
+        rf_json: &str,
+    ) -> PyResult<Vec<bool>> {
+        py.allow_threads(|| self.inner.link_mutual_batch(&pairs, rf_json))
+            .map_err(map_err)
+    }
 }
 
 #[pyfunction]

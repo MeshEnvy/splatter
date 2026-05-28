@@ -66,7 +66,14 @@ session = get_session(mirror_root="/path/to/skadi/mirror", verbose=True)
 session.preload_tiles(["N40W118.hgt.gz", ...])
 session.run("/work/site_workspace")          # request.json in work dir
 session.run_batch("/work/viewsheds", batch_jobs=8, requests_json=open("batch.json").read())
+
+# Pairwise RF link checks (corridor / pathfinding; reuses resident DEM)
+session.ensure_tiles_for_points([(lat, lon), ...], buffer_m=5000.0)
+session.link_mutual_viable(lat_a, lon_a, lat_b, lon_b, rf_json)
+session.link_mutual_batch([(lat_a, lon_a, lat_b, lon_b), ...], rf_json)  # parallel
 ```
+
+`rf_json` is a ``SplatCoverageRequest`` JSON blob (preset propagation fields; lat/lon/radius set ``radius`` as max hop range).
 
 ## Tests
 

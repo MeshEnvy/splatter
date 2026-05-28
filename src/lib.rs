@@ -6,6 +6,7 @@ pub mod hash;
 pub mod kml;
 pub mod lora;
 pub mod ppm;
+pub mod propagate;
 pub mod ray_cache;
 pub mod session;
 pub mod skadi_fetch;

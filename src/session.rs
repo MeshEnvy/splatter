@@ -8,6 +8,10 @@ use anyhow::{Context, Result};
 use crate::dem::DemMosaic;
 use crate::engine::{run_batch_coverage_with_dem, run_coverage_with_dem, required_tile_names};
 use crate::hash::{splat_input_sha256, Request as CovRequest};
+use crate::propagate::{
+    evaluate_link, evaluate_mutual_link_viable, evaluate_mutual_links_parallel,
+    link_context_from_json, required_tile_names_for_points, LinkContext, LinkResult,
+};
 
 pub struct Session {
     mirror_root: PathBuf,
@@ -56,6 +60,68 @@ impl Session {
         tile_set.sort();
         tile_set.dedup();
         self.preload_tiles(&tile_set)
+    }
+
+    pub fn ensure_tiles_for_points(&self, points: &[(f64, f64)], buffer_m: f64) -> Result<()> {
+        let tiles = required_tile_names_for_points(points, buffer_m);
+        self.preload_tiles(&tiles)
+    }
+
+    pub fn link_context(&self, rf_json: &str) -> Result<LinkContext> {
+        link_context_from_json(rf_json)
+    }
+
+    pub fn link_eval(
+        &self,
+        tx_lat: f64,
+        tx_lon: f64,
+        rx_lat: f64,
+        rx_lon: f64,
+        rf_json: &str,
+    ) -> Result<LinkResult> {
+        let ctx = link_context_from_json(rf_json)?;
+        let dem = self.dem.lock().unwrap();
+        Ok(evaluate_link(
+            &dem, tx_lat, tx_lon, rx_lat, rx_lon, &ctx,
+        ))
+    }
+
+    pub fn link_viable(
+        &self,
+        tx_lat: f64,
+        tx_lon: f64,
+        rx_lat: f64,
+        rx_lon: f64,
+        rf_json: &str,
+    ) -> Result<bool> {
+        Ok(self
+            .link_eval(tx_lat, tx_lon, rx_lat, rx_lon, rf_json)?
+            .viable)
+    }
+
+    pub fn link_mutual_viable(
+        &self,
+        lat_a: f64,
+        lon_a: f64,
+        lat_b: f64,
+        lon_b: f64,
+        rf_json: &str,
+    ) -> Result<bool> {
+        let ctx = link_context_from_json(rf_json)?;
+        let dem = self.dem.lock().unwrap();
+        Ok(evaluate_mutual_link_viable(
+            &dem, lat_a, lon_a, lat_b, lon_b, &ctx,
+        ))
+    }
+
+    pub fn link_mutual_batch(
+        &self,
+        pairs: &[(f64, f64, f64, f64)],
+        rf_json: &str,
+    ) -> Result<Vec<bool>> {
+        let ctx = link_context_from_json(rf_json)?;
+        let dem = self.dem.lock().unwrap();
+        Ok(evaluate_mutual_links_parallel(&dem, pairs, &ctx))
     }
 
     pub fn input_sha256(&self, req: &CovRequest) -> Result<String> {
