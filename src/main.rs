@@ -1,22 +1,12 @@
 //! Container entry: read `/work/request.json`, Skadi mirror under `SPLAT_CACHE`, write SPLAT-shaped outputs.
 
-use std::fs;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
-mod dem;
-mod skadi_fetch;
-mod engine;
-mod hash;
-mod kml;
-mod lora;
-mod ppm;
-mod ray_cache;
-
-use engine::{run_batch_coverage, run_coverage};
-use hash::{splat_input_sha256, Request as CovRequest};
+use splatter::engine::{run_batch_coverage, run_coverage};
+use splatter::hash::{splat_input_sha256, Request as CovRequest};
 
 #[derive(Parser)]
 #[command(name = "splatter")]
@@ -63,8 +53,8 @@ fn main() -> Result<()> {
         } => run_batch_coverage(&work_dir, verbose)
             .with_context(|| format!("run batch work_dir={}", work_dir.display())),
         Command::InputSha256 { request } => {
-            let raw =
-                fs::read_to_string(&request).with_context(|| request.display().to_string())?;
+            let raw = std::fs::read_to_string(&request)
+                .with_context(|| request.display().to_string())?;
             let parsed: CovRequest =
                 serde_json::from_str(&raw).with_context(|| format!("{}", request.display()))?;
             println!("{}", splat_input_sha256(&parsed)?);

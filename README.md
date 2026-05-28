@@ -2,19 +2,30 @@
 
 Fresnel-aware knife-edge diffraction (ITU-R P.526) + FSPL coverage raster. Drop-in SPLAT-shaped outputs: `output.ppm`, `output.kml`, `splat.png`, `manifest.json`.
 
-## Build
+Peaky imports the **PyO3 extension** (`pip install` / maturin wheel) for in-process coverage with a resident DEM mosaic. The optional CLI remains for debugging.
+
+## Build extension (maturin)
 
 ```bash
-cargo build --release
+cd splatter
+pip install maturin
+maturin develop --release
 ```
 
-Docker:
+Docker (Peaky image):
 
 ```bash
-docker build -t splatter:latest .
+docker build --target dev -t peaky:dev .
 ```
 
-## Run
+## Optional CLI
+
+```bash
+cargo build --release --bin splatter --no-default-features
+./target/release/splatter --help
+```
+
+## Run (CLI)
 
 Container entry reads `/work/request.json`:
 
@@ -43,13 +54,25 @@ docker run --rm \
 Input hash (stable digest for workspace cache keys):
 
 ```bash
-splatter input-sha256 --request /path/to/request.json
+python -c 'import splatter, json; print(splatter.input_sha256(open("request.json").read()))'
+```
+
+## Python API
+
+```python
+from splatter import get_session
+
+session = get_session(mirror_root="/path/to/skadi/mirror", verbose=True)
+session.preload_tiles(["N40W118.hgt.gz", ...])
+session.run("/work/site_workspace")          # request.json in work dir
+session.run_batch("/work/viewsheds", batch_jobs=8, requests_json=open("batch.json").read())
 ```
 
 ## Tests
 
 ```bash
 cargo test
+./peaky-test tests/test_peaky_los_input_hash.py
 ```
 
 Golden hash fixture: `tests/fixtures/splat_request_hash_fixture.json`.

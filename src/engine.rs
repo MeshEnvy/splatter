@@ -27,6 +27,36 @@ struct PreparedJob {
     threshold_dbm: f64,
 }
 
+pub fn required_tile_names(lat: f64, lon: f64, radius_m: f64) -> Vec<String> {
+    let delta_deg = radius_m / EARTH_RADIUS_M * (180.0 / std::f64::consts::PI);
+    let lat_min = lat - delta_deg;
+    let lat_max = lat + delta_deg;
+    let cos_lat = lat.to_radians().cos().max(0.01);
+    let lon_min = lon - delta_deg / cos_lat;
+    let lon_max = lon + delta_deg / cos_lat;
+    let lat_min_tile = lat_min.floor() as i32;
+    let lat_max_tile = lat_max.floor() as i32;
+    let lon_min_tile = lon_min.floor() as i32;
+    let lon_max_tile = lon_max.floor() as i32;
+    let mut out = Vec::new();
+    for lat_tile in lat_min_tile..=lat_max_tile {
+        for lon_tile in lon_min_tile..=lon_max_tile {
+            let ns = if lat_tile >= 0 { 'N' } else { 'S' };
+            let ew = if lon_tile >= 0 { 'E' } else { 'W' };
+            out.push(format!(
+                "{}{}{}{:03}.hgt.gz",
+                ns,
+                lat_tile.abs(),
+                ew,
+                lon_tile.abs()
+            ));
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
 fn mirror_root_from_work_dir(work_dir: &Path) -> PathBuf {
     std::env::var("SPLAT_CACHE")
         .map(PathBuf::from)
@@ -42,18 +72,23 @@ fn batch_jobs_from_env() -> usize {
 }
 
 pub fn run_coverage(work_dir: &Path, verbose: bool) -> Result<()> {
+    let mirror_root = mirror_root_from_work_dir(work_dir);
+    let req_path = work_dir.join("request.json");
+    let raw = fs::read_to_string(&req_path)
+        .with_context(|| format!("read {}", req_path.display()))?;
+    let parsed: CovRequest =
+        serde_json::from_str(&raw).context("parse request.json as SplatCoverageRequest")?;
+    let tiles = required_tile_names(parsed.lat, parsed.lon, parsed.radius);
+    let dem = DemMosaic::load_mirror(&mirror_root, &tiles, verbose).context("DEM mosaic")?;
+    run_coverage_with_dem(work_dir, &dem, verbose)
+}
+
+pub fn run_coverage_with_dem(work_dir: &Path, dem: &DemMosaic, verbose: bool) -> Result<()> {
     let log = |msg: &str| {
         if verbose {
             eprintln!("[splatter] {}", msg);
         }
     };
-
-    let mirror_root = mirror_root_from_work_dir(work_dir);
-    log(&format!(
-        "work_dir={}  SPLAT_CACHE={}",
-        work_dir.display(),
-        mirror_root.display()
-    ));
 
     let req_path = work_dir.join("request.json");
     let raw = fs::read_to_string(&req_path)
@@ -61,39 +96,43 @@ pub fn run_coverage(work_dir: &Path, verbose: bool) -> Result<()> {
     let parsed: CovRequest =
         serde_json::from_str(&raw).context("parse request.json as SplatCoverageRequest")?;
     let job = prepare_job(parsed)?;
-    let tiles = required_tile_names(job.req.lat, job.req.lon, job.req.radius);
-    log(&format!(
-        "DEM mirror: {} tile(s): {}",
-        tiles.len(),
-        tiles.join(", ")
-    ));
-    let dem = DemMosaic::load_mirror(&mirror_root, &tiles, verbose).context("DEM mosaic")?;
-    run_one_coverage(&job, &dem, work_dir, verbose, true).context("single coverage run")?;
+    run_one_coverage(&job, dem, work_dir, verbose, true).context("single coverage run")?;
     log("done.");
     Ok(())
 }
 
 pub fn run_batch_coverage(work_dir: &Path, verbose: bool) -> Result<()> {
+    let mirror_root = mirror_root_from_work_dir(work_dir);
+    let req_path = work_dir.join("request.json");
+    let raw = fs::read_to_string(&req_path)
+        .with_context(|| format!("read {}", req_path.display()))?;
+    let requests: Vec<CovRequest> =
+        serde_json::from_str(&raw).context("parse request.json as [SplatCoverageRequest]")?;
+    let mut tile_set: Vec<String> = Vec::new();
+    for req in &requests {
+        tile_set.extend(required_tile_names(req.lat, req.lon, req.radius));
+    }
+    tile_set.sort();
+    tile_set.dedup();
+    let dem = DemMosaic::load_mirror(&mirror_root, &tile_set, verbose).context("DEM mosaic")?;
+    run_batch_coverage_with_dem(work_dir, &dem, requests, verbose, batch_jobs_from_env())
+}
+
+pub fn run_batch_coverage_with_dem(
+    work_dir: &Path,
+    dem: &DemMosaic,
+    requests: Vec<CovRequest>,
+    verbose: bool,
+    batch_jobs: usize,
+) -> Result<()> {
     let log = |msg: &str| {
         if verbose {
             eprintln!("[splatter] {}", msg);
         }
     };
 
-    let mirror_root = mirror_root_from_work_dir(work_dir);
-    log(&format!(
-        "batch work_dir={}  SPLAT_CACHE={}",
-        work_dir.display(),
-        mirror_root.display()
-    ));
-
-    let req_path = work_dir.join("request.json");
-    let raw = fs::read_to_string(&req_path)
-        .with_context(|| format!("read {}", req_path.display()))?;
-    let requests: Vec<CovRequest> =
-        serde_json::from_str(&raw).context("parse request.json as [SplatCoverageRequest]")?;
     if requests.is_empty() {
-        bail!("batch request.json must contain at least one coverage request");
+        bail!("batch must contain at least one coverage request");
     }
 
     let started = Instant::now();
@@ -102,27 +141,19 @@ pub fn run_batch_coverage(work_dir: &Path, verbose: bool) -> Result<()> {
         .map(prepare_job)
         .collect::<Result<Vec<_>>>()?;
 
-    let mut tile_set: Vec<String> = Vec::new();
-    for job in &jobs {
-        tile_set.extend(required_tile_names(job.req.lat, job.req.lon, job.req.radius));
-    }
-    tile_set.sort();
-    tile_set.dedup();
-
     log(&format!(
-        "batch: {} request(s), {} unique DEM tile(s)",
+        "batch: {} request(s), {} DEM tile(s) in session",
         jobs.len(),
-        tile_set.len()
+        dem.tile_count()
     ));
-    let dem = DemMosaic::load_mirror(&mirror_root, &tile_set, verbose).context("DEM mosaic")?;
     if verbose {
         log(&format!(
-            "batch DEM preload done ({:.2}s)",
+            "batch DEM ready ({:.2}s)",
             started.elapsed().as_secs_f64()
         ));
     }
 
-    let batch_workers = batch_jobs_from_env().min(jobs.len().max(1));
+    let batch_workers = batch_jobs.max(1).min(jobs.len().max(1));
     log(&format!("batch coverage workers={batch_workers}"));
 
     let pool = rayon::ThreadPoolBuilder::new()
@@ -145,7 +176,7 @@ pub fn run_batch_coverage(work_dir: &Path, verbose: bool) -> Result<()> {
                 *fail_mx.lock().unwrap() = Some(e);
                 return;
             }
-            let result = run_one_coverage(job, &dem, &out_dir, verbose, false)
+            let result = run_one_coverage(job, dem, &out_dir, verbose, false)
                 .with_context(|| format!("coverage digest={}", job.input_sha));
             match result {
                 Ok(()) => {
@@ -463,36 +494,6 @@ fn raster_row(
         }
     }
     row
-}
-
-fn required_tile_names(lat: f64, lon: f64, radius_m: f64) -> Vec<String> {
-    let delta_deg = radius_m / EARTH_RADIUS_M * (180.0 / std::f64::consts::PI);
-    let lat_min = lat - delta_deg;
-    let lat_max = lat + delta_deg;
-    let cos_lat = lat.to_radians().cos().max(0.01);
-    let lon_min = lon - delta_deg / cos_lat;
-    let lon_max = lon + delta_deg / cos_lat;
-    let lat_min_tile = lat_min.floor() as i32;
-    let lat_max_tile = lat_max.floor() as i32;
-    let lon_min_tile = lon_min.floor() as i32;
-    let lon_max_tile = lon_max.floor() as i32;
-    let mut out = Vec::new();
-    for lat_tile in lat_min_tile..=lat_max_tile {
-        for lon_tile in lon_min_tile..=lon_max_tile {
-            let ns = if lat_tile >= 0 { 'N' } else { 'S' };
-            let ew = if lon_tile >= 0 { 'E' } else { 'W' };
-            out.push(format!(
-                "{}{}{}{:03}.hgt.gz",
-                ns,
-                lat_tile.abs(),
-                ew,
-                lon_tile.abs()
-            ));
-        }
-    }
-    out.sort();
-    out.dedup();
-    out
 }
 
 fn bbox_for_radius(lat: f64, lon: f64, radius_m: f64) -> (f64, f64, f64, f64) {

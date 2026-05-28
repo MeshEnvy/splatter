@@ -74,6 +74,40 @@ pub struct DemMosaic {
 }
 
 impl DemMosaic {
+    pub fn empty() -> Self {
+        Self {
+            tiles: HashMap::new(),
+        }
+    }
+
+    pub fn tile_count(&self) -> usize {
+        self.tiles.len()
+    }
+
+    pub fn ensure_tiles(
+        &mut self,
+        mirror_root: &Path,
+        tile_names: &[String],
+        verbose: bool,
+    ) -> Result<()> {
+        let missing: Vec<String> = tile_names
+            .iter()
+            .filter(|name| match tile_coord_from_stem(&stem_key(name)) {
+                Ok(coord) => !self.tiles.contains_key(&coord),
+                Err(_) => true,
+            })
+            .cloned()
+            .collect();
+        if missing.is_empty() {
+            return Ok(());
+        }
+        let loaded = Self::load_mirror(mirror_root, &missing, verbose)?;
+        for (coord, tile) in loaded.tiles {
+            self.tiles.insert(coord, tile);
+        }
+        Ok(())
+    }
+
     pub fn load_mirror(mirror_root: &Path, tile_names: &[String], verbose: bool) -> Result<Self> {
         if verbose {
             eprintln!(
