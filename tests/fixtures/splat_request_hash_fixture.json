@@ -22,7 +22,7 @@
   "colormap": "plasma",
   "min_dbm": -130.0,
   "max_dbm": -80.0,
-  "high_resolution": true,
+  "raster_dimension": 417,
   "modem": {
     "spreading_factor": 7,
     "bandwidth_khz": 62.5,

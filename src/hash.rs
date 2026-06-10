@@ -1,4 +1,4 @@
-//! Canonical input hash for cache/workspace grouping (schema v6).
+//! Canonical input hash for cache/workspace grouping (schema v7).
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -6,7 +6,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 /// Bump when normalization or coverage semantics change.
-pub const SPLAT_CACHE_SCHEMA_VERSION: i64 = 6;
+pub const SPLAT_CACHE_SCHEMA_VERSION: i64 = 7;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -62,8 +62,8 @@ pub struct Request {
     pub min_dbm: f64,
     #[serde(default = "default_max_dbm")]
     pub max_dbm: f64,
-    #[serde(default = "default_high_resolution")]
-    pub high_resolution: bool,
+    #[serde(default = "default_raster_dimension")]
+    pub raster_dimension: u32,
     pub modem: LoRaModemParams,
 }
 
@@ -100,15 +100,21 @@ fn default_min_dbm() -> f64 {
 fn default_max_dbm() -> f64 {
     -30.0
 }
-fn default_high_resolution() -> bool {
-    true
+fn default_raster_dimension() -> u32 {
+    500
 }
 
+pub const MAX_RADIUS_M: f64 = 100_000.0;
+pub const MIN_RASTER_DIMENSION: u32 = 128;
+pub const MAX_RASTER_DIMENSION: u32 = 4096;
+
 pub fn normalize(mut r: Request) -> Request {
-    r.high_resolution = true;
-    if r.radius > 100_000.0 {
-        r.radius = 100_000.0;
+    if r.radius > MAX_RADIUS_M {
+        r.radius = MAX_RADIUS_M;
     }
+    r.raster_dimension = r
+        .raster_dimension
+        .clamp(MIN_RASTER_DIMENSION, MAX_RASTER_DIMENSION);
     r.fresnel_clearance_fraction = r.fresnel_clearance_fraction.clamp(0.0, 1.0);
     r
 }
@@ -151,7 +157,7 @@ mod tests {
     const FIXTURE: &str =
         include_str!("../tests/fixtures/splat_request_hash_fixture.json");
     const GOLDEN: &str =
-        "c08c8569a1ab414a053679c7fb0ed9c8726c943449f514472e3ac4f71e27011d";
+        "cb6f3b7668a317b53d8c08ef264908b2240da832cb4eef0be54fa6216713a1e0";
 
     #[test]
     fn input_sha256_matches_golden_fixture() {

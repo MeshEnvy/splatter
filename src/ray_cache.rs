@@ -9,9 +9,6 @@ use crate::dem::DemMosaic;
 
 pub const EARTH_RADIUS_M: f64 = 6_378_137.0;
 
-/// Profile sample spacing aligned with the output raster (~120 m per pixel).
-pub const PROFILE_STEP_M: f64 = 120.0;
-
 const MIN_PROFILE_STEPS: usize = 40;
 
 pub struct RayTerrainCache {
@@ -29,10 +26,11 @@ impl RayTerrainCache {
         tx_lon: f64,
         radius_m: f64,
         num_rays: usize,
+        step_m: f64,
         clutter_m: f64,
         verbose: bool,
     ) -> Self {
-        let step_m = PROFILE_STEP_M;
+        let step_m = step_m.max(1.0);
         let max_steps = ((radius_m / step_m).ceil() as usize).max(MIN_PROFILE_STEPS);
         let stride = max_steps + 1;
         let mut terrain = vec![0.0_f32; num_rays * stride];

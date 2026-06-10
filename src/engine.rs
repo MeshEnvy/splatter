@@ -269,11 +269,13 @@ fn run_one_coverage(
     ));
 
     let (north, south, east, west) = bbox_for_radius(req.lat, req.lon, req.radius);
-    let (w, h) = grid_dims(req.radius);
+    let (w, h) = grid_dims(req.raster_dimension);
+    let profile_step_m = req.radius / w as f64;
     log(&format!(
-        "grid {}×{} px  bbox N={:.6} S={:.6} E={:.6} W={:.6}  fresnel_clearance_fraction={:.3}",
+        "grid {}×{} px  step≈{:.1} m  bbox N={:.6} S={:.6} E={:.6} W={:.6}  fresnel_clearance_fraction={:.3}",
         w,
         h,
+        profile_step_m,
         north,
         south,
         east,
@@ -296,6 +298,7 @@ fn run_one_coverage(
         req.lon,
         req.radius,
         num_rays,
+        profile_step_m,
         clutter,
         verbose,
     );
@@ -508,9 +511,23 @@ fn bbox_for_radius(lat: f64, lon: f64, radius_m: f64) -> (f64, f64, f64, f64) {
     (north, south, east, west)
 }
 
-fn grid_dims(radius_m: f64) -> (u32, u32) {
-    let px = ((radius_m / 120.0).round() as u32).clamp(160, 2048);
+fn grid_dims(raster_dimension: u32) -> (u32, u32) {
+    use crate::hash::{MAX_RASTER_DIMENSION, MIN_RASTER_DIMENSION};
+    let px = raster_dimension.clamp(MIN_RASTER_DIMENSION, MAX_RASTER_DIMENSION);
     (px, px)
+}
+
+#[cfg(test)]
+mod grid_tests {
+    use super::grid_dims;
+    use crate::hash::{MAX_RASTER_DIMENSION, MIN_RASTER_DIMENSION};
+
+    #[test]
+    fn grid_dims_clamps_to_bounds() {
+        assert_eq!(grid_dims(64), (MIN_RASTER_DIMENSION, MIN_RASTER_DIMENSION));
+        assert_eq!(grid_dims(500), (500, 500));
+        assert_eq!(grid_dims(8192), (MAX_RASTER_DIMENSION, MAX_RASTER_DIMENSION));
+    }
 }
 
 fn pixel_lat_lon(
