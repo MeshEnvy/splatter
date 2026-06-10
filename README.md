@@ -79,7 +79,7 @@ session.link_mutual_batch([(lat_a, lon_a, lat_b, lon_b), ...], rf_json)  # paral
 
 ```bash
 cargo test
-./peaky-test tests/test_peaky_los_input_hash.py
+./peaky test tests/test_peaky_los_input_hash.py
 ```
 
 Golden hash fixture: `tests/fixtures/splat_request_hash_fixture.json`.
